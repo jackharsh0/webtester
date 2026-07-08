@@ -246,7 +246,7 @@ This tool is for **authorized security testing only**. Use only on websites you 
 ## 📧 Contact
 
 - **GitHub**: [jackharsh0](https://github.com/jackharsh0)
-- **Email**: jackisharsh@gmail.com
+- **Email**: hjain8483@gmail.com
 - **Repository**: [webtester](https://github.com/jackharsh0/webtester)
 
 ---
