@@ -5,6 +5,7 @@ Downloads websites and runs 65+ security checks including WordPress-specific tes
 Usage:
     python webtester.py <url>                    # Scan website
     python webtester.py <url> --sqli             # SQL Injection test
+    python webtester.py <url> --api              # API Security test
     python webtester.py <url> --csp              # Generate CSP header
     python webtester.py --csp-only <scan_dir> <url>  # Generate CSP from existing scan
 """
@@ -26,6 +27,7 @@ from scraper import WebsiteScraper
 from scanner import SecurityScanner
 from csp_generator import generate_csp_report, CSPGenerator
 from sqli_scanner import SQLiScanner
+from api_security import APISecurityTester
 
 
 # Color helpers
@@ -296,9 +298,10 @@ def main():
     if len(sys.argv) < 2:
         print(f"\n  {colorize('Usage:', 'bold')} python webtester.py <url>")
         print(f"  {colorize('SQLi Mode:', 'bold')} python webtester.py <url> --sqli")
+        print(f"  {colorize('API Mode:', 'bold')} python webtester.py <url> --api")
         print(f"  {colorize('CSP Mode:', 'bold')} python webtester.py <url> --csp")
         print(f"  {colorize('Example:', 'cyan')} python webtester.py https://example.com")
-        print(f"  {colorize('Example:', 'cyan')} python webtester.py https://example.com --sqli\n")
+        print(f"  {colorize('Example:', 'cyan')} python webtester.py https://example.com --sqli --api\n")
         sys.exit(1)
     
     target_url = sys.argv[1]
@@ -310,6 +313,7 @@ def main():
     # Check for flags
     generate_csp_only = '--csp' in sys.argv
     run_sqli = '--sqli' in sys.argv
+    run_api = '--api' in sys.argv
     
     # Print banner
     print_banner()
@@ -383,10 +387,24 @@ def main():
         print(f"  {colorize('SQLi Report saved to:', 'bright_cyan')} {sqli_report}\n")
     
     # ============================================
-    # PHASE 5: CSP GENERATION (if requested)
+    # PHASE 5: API SECURITY TESTING (if requested)
+    # ============================================
+    if run_api:
+        print_phase(5 if run_sqli else 4, "API SECURITY TESTING")
+        
+        api_tester = APISecurityTester(target_url, scan_dir=scrape_result['output_dir'])
+        api_result = api_tester.scan()
+        
+        # Print API findings
+        for finding in api_result['findings']:
+            print_finding(finding)
+    
+    # ============================================
+    # PHASE 6: CSP GENERATION (if requested)
     # ============================================
     if generate_csp_only or any(f['title'].startswith('Missing Content-Security-Policy') for f in scan_result['findings']):
-        print_phase(5 if run_sqli else 4, "CSP GENERATION")
+        phase_num = 6 if (run_sqli and run_api) else (5 if (run_sqli or run_api) else 4)
+        print_phase(phase_num, "CSP GENERATION")
         generate_csp(target_url, scrape_result['output_dir'])
 
 
