@@ -1,13 +1,16 @@
 """
-WebTester - Website Security Scanner v2.0
-Downloads websites and runs 65+ security checks including WordPress-specific tests.
+WebTester - Website Security Scanner v3.0
+Downloads websites and runs 100+ security checks including WordPress, API, GraphQL, JWT, OAuth.
 
 Usage:
-    python webtester.py <url>                    # Scan website
+    python webtester.py <url>                    # Basic scan
     python webtester.py <url> --sqli             # SQL Injection test
     python webtester.py <url> --api              # API Security test
+    python webtester.py <url> --recon            # Reconnaissance
+    python webtester.py <url> --advanced         # Advanced attacks
+    python webtester.py <url> --full             # Full scan (all modules)
     python webtester.py <url> --csp              # Generate CSP header
-    python webtester.py --csp-only <scan_dir> <url>  # Generate CSP from existing scan
+    python webtester.py --batch urls.txt         # Batch scan from file
 """
 
 import sys
@@ -28,30 +31,24 @@ from scanner import SecurityScanner
 from csp_generator import generate_csp_report, CSPGenerator
 from sqli_scanner import SQLiScanner
 from api_security import APISecurityTester
+from recon import ReconScanner
+from advanced_attacks import AdvancedAttacks
+from intelligence import analyze_intelligence
+from reporting import generate_reports
+from batch_scanner import BatchScanner
 
 
-# Color helpers
 def colorize(text, color):
     """Apply color to text if colorama is available."""
     if not HAS_COLORAMA:
         return text
-    
     colors = {
-        'red': Fore.RED,
-        'green': Fore.GREEN,
-        'yellow': Fore.YELLOW,
-        'blue': Fore.BLUE,
-        'magenta': Fore.MAGENTA,
-        'cyan': Fore.CYAN,
-        'white': Fore.WHITE,
-        'bright_red': Fore.LIGHTRED_EX,
-        'bright_green': Fore.LIGHTGREEN_EX,
-        'bright_yellow': Fore.LIGHTYELLOW_EX,
-        'bright_cyan': Fore.LIGHTCYAN_EX,
-        'reset': Style.RESET_ALL,
-        'bold': Style.BRIGHT,
+        'red': Fore.RED, 'green': Fore.GREEN, 'yellow': Fore.YELLOW,
+        'blue': Fore.BLUE, 'cyan': Fore.CYAN, 'white': Fore.WHITE,
+        'bright_red': Fore.LIGHTRED_EX, 'bright_green': Fore.LIGHTGREEN_EX,
+        'bright_yellow': Fore.LIGHTYELLOW_EX, 'bright_cyan': Fore.LIGHTCYAN_EX,
+        'reset': Style.RESET_ALL, 'bold': Style.BRIGHT,
     }
-    
     return f"{colors.get(color, '')}{text}{colors['reset']}"
 
 
@@ -59,7 +56,7 @@ def print_banner():
     """Print the scanner banner."""
     banner = f"""
 {colorize('=' * 60, 'cyan')}
-{colorize('WEBTESTER', 'bold')} {colorize('-', 'white')} {colorize('Website Security Scanner v2.0', 'bright_cyan')}
+{colorize('WEBTESTER', 'bold')} {colorize('-', 'white')} {colorize('Website Security Scanner v3.0', 'bright_cyan')}
 {colorize('=' * 60, 'cyan')}
 {colorize('  Built by jackharsh0 | github.com/jackharsh0', 'bright_cyan')}
 {colorize('  "Security is not a product, but a process"', 'yellow')}
@@ -77,9 +74,9 @@ def print_phase(phase_num, phase_name):
 
 
 def print_finding(finding):
-    """Print a single finding with color based on severity."""
-    severity = finding['severity']
-    title = finding['title']
+    """Print a single finding."""
+    severity = finding.get('severity', 'info')
+    title = finding.get('title', 'Unknown')
     
     severity_labels = {
         'critical': f"{colorize('[CRITICAL]', 'bright_red')}",
@@ -93,7 +90,7 @@ def print_finding(finding):
     
     if finding.get('evidence'):
         evidence_lines = finding['evidence'].split('\n')
-        for line in evidence_lines[:3]:  # Limit to 3 lines
+        for line in evidence_lines[:3]:
             print(f"    {colorize('>', 'cyan')} {line}")
     
     if finding.get('remediation'):
@@ -104,52 +101,41 @@ def print_finding(finding):
 
 def print_summary(results, scrape_result, scan_result):
     """Print the final summary."""
-    findings = scan_result['findings']
-    stats = scan_result['stats']
+    findings = scan_result.get('findings', [])
+    stats = scan_result.get('stats', {})
     
     print()
     print(colorize('=' * 60, 'cyan'))
     print(colorize('SCAN RESULTS', 'bold'))
     print(colorize('=' * 60, 'cyan'))
     
-    # Target info
     print(f"\n  {colorize('Target:', 'bright_cyan')} {results['url']}")
     print(f"  {colorize('Duration:', 'bright_cyan')} {results['duration']}")
-    print(f"  {colorize('Files Downloaded:', 'bright_cyan')} {scrape_result['files_count']}")
-    print(f"  {colorize('Total Size:', 'bright_cyan')} {scrape_result['total_size'] / 1024:.1f} KB")
-    
-    # Severity breakdown
-    print(f"\n  {colorize('SEVERITY BREAKDOWN:', 'bold')}")
+    print(f"  {colorize('Files Downloaded:', 'bright_cyan')} {scrape_result.get('files_count', 0)}")
     
     severity_order = ['critical', 'high', 'medium', 'low', 'info']
     severity_colors = {
-        'critical': 'bright_red',
-        'high': 'red',
-        'medium': 'yellow',
-        'low': 'green',
-        'info': 'white',
+        'critical': 'bright_red', 'high': 'red', 'medium': 'yellow',
+        'low': 'green', 'info': 'white',
     }
+    
+    print(f"\n  {colorize('SEVERITY BREAKDOWN:', 'bold')}")
     
     total_findings = 0
     for severity in severity_order:
-        count = stats.get(severity, 0)
+        count = sum(1 for f in findings if f.get('severity') == severity)
         if count > 0:
             color = severity_colors[severity]
             print(f"    {colorize('*', color)} {severity.upper()}: {count}")
             total_findings += count
     
     print(f"\n  {colorize('Total Issues:', 'bold')} {total_findings}")
-    print(f"  {colorize('Checks Run:', 'bright_cyan')} {stats.get('checks_run', 0)}")
-    print(f"  {colorize('Checks Passed:', 'bright_green')} {stats.get('checks_passed', 0)}")
     
-    # Top critical findings
-    critical_findings = [f for f in findings if f['severity'] == 'critical']
+    critical_findings = [f for f in findings if f.get('severity') == 'critical']
     if critical_findings:
         print(f"\n  {colorize('TOP CRITICAL ISSUES:', 'bright_red')}")
         for i, finding in enumerate(critical_findings[:5], 1):
-            print(f"    {colorize(f'{i}.', 'red')} {finding['title']}")
-            if finding.get('remediation'):
-                print(f"       {colorize('Fix:', 'bright_cyan')} {finding['remediation'][:80]}...")
+            print(f"    {colorize(f'{i}.', 'red')} {finding.get('title', 'Unknown')}")
     
     print()
     print(colorize('=' * 60, 'cyan'))
@@ -166,57 +152,197 @@ def print_summary(results, scrape_result, scan_result):
     print()
 
 
-def save_report(results, scrape_result, scan_result, output_dir):
-    """Save a text report to file."""
-    report_path = Path(output_dir) / 'report.txt'
+def main():
+    """Main entry point."""
+    # Check for batch mode
+    if '--batch' in sys.argv:
+        idx = sys.argv.index('--batch')
+        if len(sys.argv) < idx + 2:
+            print(f"\n  {colorize('Usage:', 'bold')} python webtester.py --batch <urls_file>")
+            sys.exit(1)
+        
+        urls_file = sys.argv[idx + 1]
+        
+        def scan_func(url):
+            scraper = WebsiteScraper(url, output_dir="data", max_depth=3, max_files=100)
+            scrape_result = scraper.scrape()
+            scanner = SecurityScanner(url, scan_dir=scrape_result['output_dir'])
+            return scanner.scan()
+        
+        batch = BatchScanner()
+        batch.scan_batch(urls_file, scan_func)
+        return
     
-    findings = scan_result['findings']
-    stats = scan_result['stats']
+    # Check for CSP-only mode
+    if '--csp-only' in sys.argv:
+        idx = sys.argv.index('--csp-only')
+        if len(sys.argv) < idx + 3:
+            print(f"\n  {colorize('Usage:', 'bold')} python webtester.py --csp-only <scan_dir> <url>")
+            sys.exit(1)
+        scan_dir = sys.argv[idx + 1]
+        target_url = sys.argv[idx + 2]
+        if not target_url.startswith(('http://', 'https://')):
+            target_url = 'https://' + target_url
+        generate_csp(target_url, scan_dir)
+        return
     
-    with open(report_path, 'w', encoding='utf-8') as f:
-        f.write("=" * 60 + "\n")
-        f.write("WEBTESTER - Security Scan Report\n")
-        f.write("=" * 60 + "\n\n")
-        
-        f.write(f"Target: {results['url']}\n")
-        f.write(f"Date: {results['timestamp']}\n")
-        f.write(f"Duration: {results['duration']}\n")
-        f.write(f"Files Downloaded: {scrape_result['files_count']}\n")
-        f.write(f"Total Size: {scrape_result['total_size'] / 1024:.1f} KB\n\n")
-        
-        f.write("-" * 60 + "\n")
-        f.write("SEVERITY BREAKDOWN\n")
-        f.write("-" * 60 + "\n")
-        
-        for severity in ['critical', 'high', 'medium', 'low', 'info']:
-            count = stats.get(severity, 0)
-            if count > 0:
-                f.write(f"  {severity.upper()}: {count}\n")
-        
-        f.write(f"\nTotal Issues: {len(findings)}\n")
-        f.write(f"Checks Run: {stats.get('checks_run', 0)}\n")
-        f.write(f"Checks Passed: {stats.get('checks_passed', 0)}\n\n")
-        
-        f.write("-" * 60 + "\n")
-        f.write("DETAILED FINDINGS\n")
-        f.write("-" * 60 + "\n\n")
-        
-        for i, finding in enumerate(findings, 1):
-            f.write(f"{i}. [{finding['severity'].upper()}] {finding['title']}\n")
-            f.write(f"   Category: {finding['category']}\n")
-            if finding.get('description'):
-                f.write(f"   Description: {finding['description']}\n")
-            if finding.get('evidence'):
-                f.write(f"   Evidence: {finding['evidence']}\n")
-            if finding.get('remediation'):
-                f.write(f"   Remediation: {finding['remediation']}\n")
-            f.write("\n")
-        
-        f.write("=" * 60 + "\n")
-        f.write("END OF REPORT\n")
-        f.write("=" * 60 + "\n")
+    # Check arguments
+    if len(sys.argv) < 2:
+        print(f"\n  {colorize('Usage:', 'bold')} python webtester.py <url>")
+        print(f"  {colorize('Modes:', 'bold')}")
+        print(f"    --sqli       SQL Injection testing")
+        print(f"    --api        API Security testing (REST, GraphQL, JWT, OAuth)")
+        print(f"    --recon      Reconnaissance (subdomains, ports, directories)")
+        print(f"    --advanced   Advanced attacks (CORS, XXE, SSTI, CSRF)")
+        print(f"    --full       Full scan (all modules)")
+        print(f"    --csp        Generate CSP header")
+        print(f"    --batch      Batch scan from file")
+        print(f"  {colorize('Example:', 'cyan')} python webtester.py https://example.com --full\n")
+        sys.exit(1)
     
-    return report_path
+    target_url = sys.argv[1]
+    
+    # Validate URL
+    if not target_url.startswith(('http://', 'https://')):
+        target_url = 'https://' + target_url
+    
+    # Check for flags
+    generate_csp_only = '--csp' in sys.argv
+    run_sqli = '--sqli' in sys.argv
+    run_api = '--api' in sys.argv
+    run_recon = '--recon' in sys.argv
+    run_advanced = '--advanced' in sys.argv
+    run_full = '--full' in sys.argv
+    
+    # Full scan enables all modules
+    if run_full:
+        run_sqli = True
+        run_api = True
+        run_recon = True
+        run_advanced = True
+    
+    # Print banner
+    print_banner()
+    
+    # Start timer
+    start_time = datetime.now()
+    timestamp = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    
+    print(f"  {colorize('Target:', 'bright_cyan')} {target_url}")
+    print(f"  {colorize('Time:', 'bright_cyan')} {timestamp}")
+    
+    # Collect all findings
+    all_findings = []
+    
+    # ============================================
+    # PHASE 1: DOWNLOAD WEBSITE
+    # ============================================
+    print_phase(1, "DOWNLOADING WEBSITE")
+    
+    scraper = WebsiteScraper(target_url, output_dir="data", max_depth=3, max_files=200)
+    scrape_result = scraper.scrape()
+    
+    # ============================================
+    # PHASE 2: SECURITY SCANNING
+    # ============================================
+    print_phase(2, "SECURITY SCANNING")
+    
+    scanner = SecurityScanner(target_url, scan_dir=scrape_result['output_dir'])
+    scan_result = scanner.scan()
+    all_findings.extend(scan_result.get('findings', []))
+    
+    # ============================================
+    # PHASE 3: RECONNAISSANCE (if requested)
+    # ============================================
+    if run_recon:
+        print_phase(3, "RECONNAISSANCE")
+        
+        recon = ReconScanner(target_url, scan_dir=scrape_result['output_dir'])
+        recon_result = recon.scan()
+        all_findings.extend(recon_result.get('findings', []))
+    
+    # ============================================
+    # PHASE 4: SQL INJECTION TESTING (if requested)
+    # ============================================
+    if run_sqli:
+        print_phase(4, "SQL INJECTION TESTING")
+        
+        sqli_scanner = SQLiScanner(target_url, scan_dir=scrape_result['output_dir'])
+        sqli_result = sqli_scanner.scan()
+        all_findings.extend(sqli_result.get('findings', []))
+    
+    # ============================================
+    # PHASE 5: API SECURITY TESTING (if requested)
+    # ============================================
+    if run_api:
+        print_phase(5, "API SECURITY TESTING")
+        
+        api_tester = APISecurityTester(target_url, scan_dir=scrape_result['output_dir'])
+        api_result = api_tester.scan()
+        all_findings.extend(api_result.get('findings', []))
+    
+    # ============================================
+    # PHASE 6: ADVANCED ATTACKS (if requested)
+    # ============================================
+    if run_advanced:
+        print_phase(6, "ADVANCED ATTACKS")
+        
+        advanced = AdvancedAttacks(target_url, scan_dir=scrape_result['output_dir'])
+        advanced_result = advanced.scan()
+        all_findings.extend(advanced_result.get('findings', []))
+    
+    # ============================================
+    # PHASE 7: INTELLIGENCE ANALYSIS
+    # ============================================
+    if len(all_findings) > 0:
+        print_phase(7, "INTELLIGENCE ANALYSIS")
+        
+        intelligence = analyze_intelligence(target_url, all_findings, scan_dir=scrape_result['output_dir'])
+        risk_score = intelligence.get('risk_score', {})
+        executive_summary = intelligence.get('executive_summary', {})
+    
+    # ============================================
+    # PHASE 8: RESULTS
+    # ============================================
+    print_phase(8, "RESULTS")
+    
+    # End timer
+    end_time = datetime.now()
+    duration = (end_time - start_time).total_seconds()
+    
+    # Prepare results
+    results = {
+        'url': target_url,
+        'timestamp': timestamp,
+        'duration': f"{duration:.1f} seconds",
+        'output_dir': scrape_result['output_dir'],
+    }
+    
+    # Print findings
+    for finding in all_findings:
+        if finding.get('category') not in ['risk_score', 'executive_summary', 'attack_chains']:
+            print_finding(finding)
+    
+    # Print summary
+    print_summary(results, scrape_result, {'findings': all_findings, 'stats': scan_result.get('stats', {})})
+    
+    # ============================================
+    # PHASE 9: REPORT GENERATION
+    # ============================================
+    print_phase(9, "REPORT GENERATION")
+    
+    reports = generate_reports(target_url, all_findings, risk_score, executive_summary, scan_dir=scrape_result['output_dir'])
+    
+    print(f"  {colorize('Reports generated:', 'bright_cyan')}")
+    print(f"    - {reports['text_report']}")
+    print(f"    - {reports['compliance_report']}")
+    
+    # ============================================
+    # PHASE 10: CSP GENERATION (if requested)
+    # ============================================
+    if generate_csp_only or any(f.get('title', '').startswith('Missing Content-Security-Policy') for f in all_findings):
+        print_phase(10, "CSP GENERATION")
+        generate_csp(target_url, scrape_result['output_dir'])
 
 
 def generate_csp(target_url, scan_dir=None):
@@ -241,171 +367,11 @@ def generate_csp(target_url, scan_dir=None):
     print(f"\n{colorize('CSP Header:', 'bright_cyan')}")
     print(f"  {result['csp']['csp']}")
     
-    print(f"\n{colorize('Sources Found:', 'bright_cyan')}")
-    sources = result['csp']['sources_found']
-    print(f"  Scripts:  {sources['scripts']} domains")
-    print(f"  Styles:   {sources['styles']} domains")
-    print(f"  Images:   {sources['images']} domains")
-    print(f"  Fonts:    {sources['fonts']} domains")
-    print(f"  Connect:  {sources['connect']} domains")
-    print(f"  Frames:   {sources['frames']} domains")
-    
     print(f"\n{colorize('Files Generated:', 'bright_cyan')}")
     for f in result['files']:
         print(f"  {colorize('*', 'green')} {f}")
     
-    print(f"\n{colorize('=' * 60, 'cyan')}")
-    print(colorize("HOW TO USE", 'bold'))
-    print(colorize('=' * 60, 'cyan'))
-    print("""
-  1. TEST FIRST (Report Only Mode):
-     - Copy the CSP header
-     - Add it as Content-Security-Policy-Report-Only
-     - Monitor browser console for violations
-     - Fix any broken functionality
-
-  2. ENFORCE (After Testing):
-     - Change header name to Content-Security-Policy
-     - This will block all violations
-
-  3. Server-Specific Files:
-     - .htaccess.example     (Apache)
-     - nginx.conf.example    (Nginx)
-     - nodejs-middleware.js  (Node.js/Express)
-     - flask-middleware.py    (Python/Flask)
-     - wordpress-functions.php (WordPress)
-""")
-    print(colorize('=' * 60, 'cyan'))
-
-
-def main():
-    """Main entry point."""
-    # Check for CSP-only mode
-    if '--csp-only' in sys.argv:
-        idx = sys.argv.index('--csp-only')
-        if len(sys.argv) < idx + 3:
-            print(f"\n  {colorize('Usage:', 'bold')} python webtester.py --csp-only <scan_dir> <url>")
-            print(f"  {colorize('Example:', 'cyan')} python webtester.py --csp-only data/example_com https://example.com\n")
-            sys.exit(1)
-        scan_dir = sys.argv[idx + 1]
-        target_url = sys.argv[idx + 2]
-        if not target_url.startswith(('http://', 'https://')):
-            target_url = 'https://' + target_url
-        generate_csp(target_url, scan_dir)
-        return
-    
-    # Check arguments
-    if len(sys.argv) < 2:
-        print(f"\n  {colorize('Usage:', 'bold')} python webtester.py <url>")
-        print(f"  {colorize('SQLi Mode:', 'bold')} python webtester.py <url> --sqli")
-        print(f"  {colorize('API Mode:', 'bold')} python webtester.py <url> --api")
-        print(f"  {colorize('CSP Mode:', 'bold')} python webtester.py <url> --csp")
-        print(f"  {colorize('Example:', 'cyan')} python webtester.py https://example.com")
-        print(f"  {colorize('Example:', 'cyan')} python webtester.py https://example.com --sqli --api\n")
-        sys.exit(1)
-    
-    target_url = sys.argv[1]
-    
-    # Validate URL
-    if not target_url.startswith(('http://', 'https://')):
-        target_url = 'https://' + target_url
-    
-    # Check for flags
-    generate_csp_only = '--csp' in sys.argv
-    run_sqli = '--sqli' in sys.argv
-    run_api = '--api' in sys.argv
-    
-    # Print banner
-    print_banner()
-    
-    # Start timer
-    start_time = datetime.now()
-    timestamp = start_time.strftime("%Y-%m-%d %H:%M:%S")
-    
-    print(f"  {colorize('Target:', 'bright_cyan')} {target_url}")
-    print(f"  {colorize('Time:', 'bright_cyan')} {timestamp}")
-    
-    # ============================================
-    # PHASE 1: DOWNLOAD WEBSITE
-    # ============================================
-    print_phase(1, "DOWNLOADING WEBSITE")
-    
-    scraper = WebsiteScraper(target_url, output_dir="data", max_depth=3, max_files=200)
-    scrape_result = scraper.scrape()
-    
-    # ============================================
-    # PHASE 2: SECURITY SCANNING
-    # ============================================
-    print_phase(2, "SECURITY SCANNING")
-    
-    scanner = SecurityScanner(target_url, scan_dir=scrape_result['output_dir'])
-    scan_result = scanner.scan()
-    
-    # ============================================
-    # PHASE 3: RESULTS
-    # ============================================
-    print_phase(3, "RESULTS")
-    
-    # End timer
-    end_time = datetime.now()
-    duration = (end_time - start_time).total_seconds()
-    
-    # Prepare results
-    results = {
-        'url': target_url,
-        'timestamp': timestamp,
-        'duration': f"{duration:.1f} seconds",
-        'output_dir': scrape_result['output_dir'],
-    }
-    
-    # Print findings
-    for finding in scan_result['findings']:
-        print_finding(finding)
-    
-    # Print summary
-    print_summary(results, scrape_result, scan_result)
-    
-    # Save report
-    report_path = save_report(results, scrape_result, scan_result, scrape_result['output_dir'])
-    print(f"  {colorize('Report saved to:', 'bright_cyan')} {report_path}\n")
-    
-    # ============================================
-    # PHASE 4: SQL INJECTION TESTING (if requested)
-    # ============================================
-    if run_sqli:
-        print_phase(4, "SQL INJECTION TESTING")
-        
-        sqli_scanner = SQLiScanner(target_url, scan_dir=scrape_result['output_dir'])
-        sqli_result = sqli_scanner.scan()
-        
-        # Print SQLi findings
-        for finding in sqli_result['findings']:
-            print_finding(finding)
-        
-        # Generate SQLi report
-        sqli_report = sqli_scanner.generate_client_report(scrape_result['output_dir'])
-        print(f"  {colorize('SQLi Report saved to:', 'bright_cyan')} {sqli_report}\n")
-    
-    # ============================================
-    # PHASE 5: API SECURITY TESTING (if requested)
-    # ============================================
-    if run_api:
-        print_phase(5 if run_sqli else 4, "API SECURITY TESTING")
-        
-        api_tester = APISecurityTester(target_url, scan_dir=scrape_result['output_dir'])
-        api_result = api_tester.scan()
-        
-        # Print API findings
-        for finding in api_result['findings']:
-            print_finding(finding)
-    
-    # ============================================
-    # PHASE 6: CSP GENERATION (if requested)
-    # ============================================
-    if generate_csp_only or any(f['title'].startswith('Missing Content-Security-Policy') for f in scan_result['findings']):
-        phase_num = 6 if (run_sqli and run_api) else (5 if (run_sqli or run_api) else 4)
-        print_phase(phase_num, "CSP GENERATION")
-        generate_csp(target_url, scrape_result['output_dir'])
+    print()
 
 
 if __name__ == "__main__":
